@@ -194,10 +194,30 @@ struct TreemapCell: View {
         }
     }
 
+    private var categoryColor: Color {
+        switch item.folderCategory {
+        case .cleanable: return .green
+        case .userContent: return .blue
+        case .systemCritical: return .red
+        }
+    }
+
     var body: some View {
         Rectangle()
             .fill(cellColor.opacity(isHovered ? 0.8 : 0.6))
             .frame(width: max(0, rect.width - 2), height: max(0, rect.height - 2))
+            .overlay(alignment: .topLeading) {
+                // Category indicator in top-left corner
+                if rect.width > 20 && rect.height > 20 {
+                    Image(systemName: item.folderCategory.flagIcon)
+                        .font(.system(size: 8))
+                        .foregroundColor(.white)
+                        .padding(3)
+                        .background(categoryColor.opacity(0.9))
+                        .clipShape(RoundedRectangle(cornerRadius: 2))
+                        .padding(2)
+                }
+            }
             .overlay(
                 VStack {
                     if rect.width > 60 && rect.height > 40 {
@@ -222,6 +242,6 @@ struct TreemapCell: View {
             .onTapGesture {
                 onTap(item)
             }
-            .help("\(item.name)\n\(SizeFormatter.format(item.size))")
+            .help("\(item.name)\n\(SizeFormatter.format(item.size))\n\(item.folderCategory.tooltip)")
     }
 }

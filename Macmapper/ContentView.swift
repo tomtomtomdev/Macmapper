@@ -15,6 +15,7 @@ struct ContentView: View {
     @State private var viewMode: ViewMode = .list
     @State private var treemapPath: [DirectoryItem] = []
     @State private var showExportDialog = false
+    @State private var historyTask: Task<Void, Never>?
 
     enum ViewMode: String, CaseIterable {
         case list = "List"
@@ -214,14 +215,17 @@ struct ContentView: View {
 
     private func startScan(url: URL) {
         treemapPath = []
+        historyTask?.cancel()
         scanner.scan(url: url)
 
         // Save to history when scan completes
-        Task {
+        historyTask = Task {
             // Wait for scan to complete
             while scanner.isScanning {
                 try? await Task.sleep(nanoseconds: 100_000_000)
             }
+
+            guard !Task.isCancelled else { return }
 
             if let root = scanner.rootItem {
                 history.add(

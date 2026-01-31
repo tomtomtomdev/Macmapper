@@ -39,8 +39,23 @@ struct DirectoryRowView: View {
         return NSWorkspace.shared.icon(forFile: item.url.path)
     }
 
+    private var categoryColor: Color {
+        switch item.folderCategory {
+        case .cleanable: return .green
+        case .userContent: return .blue
+        case .systemCritical: return .red
+        }
+    }
+
     var body: some View {
         HStack(spacing: 8) {
+            // Category flag (left of icon)
+            Image(systemName: item.folderCategory.flagIcon)
+                .font(.system(size: 10))
+                .foregroundColor(categoryColor)
+                .frame(width: 14)
+                .help(item.folderCategory.tooltip)
+
             // File/folder icon
             Image(nsImage: icon)
                 .resizable()

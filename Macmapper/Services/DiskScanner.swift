@@ -21,7 +21,7 @@ class DiskScanner: ObservableObject {
     private var timer: Timer?
 
     // Throttle properties for progressive updates
-    private var lastUpdateTime: Date = .distantPast
+    nonisolated(unsafe) private var lastUpdateTime: Date = .distantPast
     private let updateInterval: TimeInterval = 0.3  // 300ms throttle
 
     func scan(url: URL) {
@@ -38,31 +38,41 @@ class DiskScanner: ObservableObject {
 
         // Start elapsed time timer
         timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            Task { @MainActor in
+            Task { @MainActor [weak self] in
                 if let start = self?.startTime {
                     self?.elapsedTime = Date().timeIntervalSince(start)
                 }
             }
         }
 
-        scanTask = Task {
+        // Launch scanning on background thread using Task.detached
+        scanTask = Task.detached(priority: .userInitiated) { [weak self] in
+            guard let self = self else { return }
+
             do {
-                let result = try await scanDirectoryProgressive(url: url, isRoot: true)
-                // Final update with isScanning = false
-                var mutableResult = result
-                mutableResult.isScanning = false
-                mutableResult.sortChildrenBySize()
-                mutableResult.calculatePercentages()
-                self.rootItem = mutableResult
+                let result = try await self.scanDirectoryProgressive(url: url, isRoot: true)
+
+                // Final update on main thread
+                await MainActor.run {
+                    var mutableResult = result
+                    mutableResult.isScanning = false
+                    mutableResult.sortChildrenBySize()
+                    mutableResult.calculatePercentages()
+                    self.rootItem = mutableResult
+                    self.timer?.invalidate()
+                    self.timer = nil
+                    self.isScanning = false
+                }
             } catch {
                 if !Task.isCancelled {
-                    self.errorMessage = error.localizedDescription
+                    await MainActor.run {
+                        self.errorMessage = error.localizedDescription
+                        self.timer?.invalidate()
+                        self.timer = nil
+                        self.isScanning = false
+                    }
                 }
             }
-
-            self.timer?.invalidate()
-            self.timer = nil
-            self.isScanning = false
         }
     }
 
@@ -75,20 +85,24 @@ class DiskScanner: ObservableObject {
     }
 
     /// Progressive scan that publishes partial results for immediate UI feedback
-    private func scanDirectoryProgressive(url: URL, isRoot: Bool) async throws -> DirectoryItem {
+    /// Runs on background thread - all file I/O happens off main thread
+    nonisolated private func scanDirectoryProgressive(url: URL, isRoot: Bool) async throws -> DirectoryItem {
         try Task.checkCancellation()
 
         let fileManager = FileManager.default
         let resourceKeys: Set<URLResourceKey> = [.isDirectoryKey, .fileSizeKey, .isPackageKey]
 
-        // Update current path on main thread
-        currentPath = url.path
-        scannedCount += 1
+        // Update UI on main thread (non-blocking)
+        let path = url.path
+        Task { @MainActor [weak self] in
+            self?.currentPath = path
+            self?.scannedCount += 1
+        }
 
         var totalSize: Int64 = 0
         var children: [DirectoryItem] = []
 
-        // Check if this is an app bundle
+        // Check if this is an app bundle (file I/O on background thread)
         let isPackage = (try? url.resourceValues(forKeys: [.isPackageKey]).isPackage) ?? false
 
         if isPackage {
@@ -105,7 +119,7 @@ class DiskScanner: ObservableObject {
 
         var subdirectories: [URL] = []
 
-        // First pass: get immediate directory contents
+        // First pass: get immediate directory contents (file I/O on background thread)
         let contents = try? fileManager.contentsOfDirectory(
             at: url,
             includingPropertiesForKeys: Array(resourceKeys),
@@ -162,7 +176,7 @@ class DiskScanner: ObservableObject {
                 children: children,
                 isScanning: true
             )
-            publishPartialResults(initialRoot)
+            await publishPartialResults(initialRoot)
         }
 
         // Recursively scan subdirectories
@@ -188,7 +202,7 @@ class DiskScanner: ObservableObject {
                     children: children,
                     isScanning: true
                 )
-                publishPartialResults(partialRoot)
+                await publishPartialResults(partialRoot)
             } else {
                 children.append(child)
                 totalSize += child.size
@@ -204,7 +218,7 @@ class DiskScanner: ObservableObject {
     }
 
     /// Publish partial results with throttling to avoid UI jank
-    private func publishPartialResults(_ partialItem: DirectoryItem) {
+    nonisolated private func publishPartialResults(_ partialItem: DirectoryItem) async {
         let now = Date()
         guard now.timeIntervalSince(lastUpdateTime) >= updateInterval else { return }
         lastUpdateTime = now
@@ -212,10 +226,14 @@ class DiskScanner: ObservableObject {
         var item = partialItem
         item.sortChildrenBySize()
         item.calculatePercentages()
-        self.rootItem = item
+
+        await MainActor.run { [weak self] in
+            self?.rootItem = item
+        }
     }
 
-    private func calculateBundleSize(url: URL) -> Int64 {
+    /// Calculate total size of a bundle/package (runs on background thread)
+    nonisolated private func calculateBundleSize(url: URL) -> Int64 {
         let fileManager = FileManager.default
         var totalSize: Int64 = 0
 
